@@ -1,0 +1,848 @@
+-- Rish Plus HB v6.4.22 - Draggable Overlays Version (с обновленным усилителем слайда по E)[cite: 4, 5]
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local TeleportService = game:GetService("TeleportService")
+local VirtualUser = game:GetService("VirtualUser")
+local SoundService = game:GetService("SoundService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+if getgenv().RishPlusCleanup then
+    pcall(getgenv().RishPlusCleanup)
+end
+
+local activeConnections = {}
+local function trackConnection(conn)
+    table.insert(activeConnections, conn)
+    return conn
+end
+
+-- Состояния
+local lookActive = false
+local lockedLookVector = nil
+local isVHeld = false
+local slideActive = false
+local isBoosting = false
+local hitboxesActive = false
+local ballMagnetActive = false
+local antiAfkActive = false
+
+local origClock = Lighting.ClockTime
+local origFov = Camera.FieldOfView
+local origFog = Lighting.FogEnd
+local origShadows = Lighting.GlobalShadows
+
+local originalMaterials = {}
+local originalShadowsState = {}
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RishPlusPanel"
+ScreenGui.Parent = PlayerGui
+ScreenGui.ResetOnSpawn = false
+
+local function cleanupAll()
+    for _, conn in ipairs(activeConnections) do
+        if conn then pcall(function() conn:Disconnect() end) end
+    end
+    activeConnections = {}
+
+    lookActive = false
+    lockedLookVector = nil
+    slideActive = false
+    isBoosting = false
+    hitboxesActive = false
+    ballMagnetActive = false
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                root.Size = Vector3.new(2, 2, 1)
+                root.Transparency = 1
+                root.CanCollide = true
+                if root:FindFirstChild("HitboxVisualizer") then
+                    root.HitboxVisualizer:Destroy()
+                end
+            end
+        end
+    end
+
+    Lighting.ClockTime = origClock
+    Lighting.FogEnd = origFog
+    Lighting.GlobalShadows = origShadows
+    Camera.FieldOfView = origFov
+    SoundService.Volume = 1
+
+    local cc = Lighting:FindFirstChild("RishColorCorrection")
+    if cc then cc:Destroy() end
+
+    if ScreenGui then
+        ScreenGui:Destroy()
+    end
+end
+
+getgenv().RishPlusCleanup = cleanupAll
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 12, 28)
+MainFrame.Position = UDim2.new(0.5, -285, 0.5, -210)
+MainFrame.Size = UDim2.new(0, 570, 0, 420)
+MainFrame.Active = true
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(255, 45, 180)
+MainStroke.Transparency = 0.2
+MainStroke.Thickness = 2
+MainStroke.Parent = MainFrame
+
+local TopBar = Instance.new("Frame")
+TopBar.Parent = MainFrame
+TopBar.BackgroundColor3 = Color3.fromRGB(32, 18, 50)
+TopBar.Size = UDim2.new(1, 0, 0, 40)
+TopBar.Active = true
+
+local TopCorner = Instance.new("UICorner")
+TopCorner.CornerRadius = UDim.new(0, 10)
+TopCorner.Parent = TopBar
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Parent = TopBar
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Position = UDim2.new(0, 15, 0, 0)
+TitleLabel.Size = UDim2.new(0, 250, 1, 0)
+TitleLabel.Font = Enum.Font.Cartoon
+TitleLabel.Text = "⚡ Rish Plus Utility Pro"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 200, 240)
+TitleLabel.TextSize = 16
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local ContainerHolder = Instance.new("Frame")
+ContainerHolder.Parent = MainFrame
+ContainerHolder.BackgroundTransparency = 1
+ContainerHolder.Position = UDim2.new(0, 0, 0, 40)
+ContainerHolder.Size = UDim2.new(1, 0, 1, -40)
+
+local MinimizeButton = Instance.new("TextButton")
+MinimizeButton.Parent = TopBar
+MinimizeButton.BackgroundColor3 = Color3.fromRGB(50, 22, 65)
+MinimizeButton.Position = UDim2.new(1, -35, 0.5, -12)
+MinimizeButton.Size = UDim2.new(0, 24, 0, 24)
+MinimizeButton.Font = Enum.Font.Cartoon
+MinimizeButton.Text = "-"
+MinimizeButton.TextColor3 = Color3.fromRGB(220, 200, 255)
+MinimizeButton.TextSize = 16
+MinimizeButton.ZIndex = 2
+
+local MinimizeCorner = Instance.new("UICorner")
+MinimizeCorner.CornerRadius = UDim.new(0, 6)
+MinimizeCorner.Parent = MinimizeButton
+
+local function makeDraggable(dragObject, targetObject)
+    targetObject = targetObject or dragObject
+    local dragging, dragStart, startPos
+    
+    trackConnection(dragObject.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            local mousePos = UserInputService:GetMouseLocation()
+            local objects = PlayerGui:GetGuiObjectsAtPosition(mousePos.X, mousePos.Y)
+            local clickedButton = false
+            for _, obj in ipairs(objects) do
+                if obj == MinimizeButton then
+                    clickedButton = true
+                    break
+                end
+            end
+            
+            if not clickedButton then
+                dragging = true
+                dragStart = input.Position
+                startPos = targetObject.Position
+            end
+        end
+    end))
+    
+    trackConnection(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+    
+    trackConnection(UserInputService.InputChanged:Connect(function(input)
+        if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and dragging then
+            local delta = input.Position - dragStart
+            targetObject.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+end
+
+local function makeElementDraggable(element)
+    local dragging, dragStart, startPos
+    trackConnection(element.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = element.Position
+        end
+    end))
+    trackConnection(UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+    trackConnection(UserInputService.InputChanged:Connect(function(input)
+        if (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) and dragging then
+            local delta = input.Position - dragStart
+            element.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end))
+end
+
+makeDraggable(TopBar, MainFrame)
+
+local isMinimized = false
+MinimizeButton.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    ContainerHolder.Visible = not isMinimized
+    if isMinimized then
+        MainFrame.Size = UDim2.new(0, 230, 0, 40)
+        MinimizeButton.Text = "+"
+    else
+        MainFrame.Size = UDim2.new(0, 570, 0, 420)
+        MinimizeButton.Text = "-"
+    end
+end)
+
+trackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.RightShift then
+        ScreenGui.Enabled = not ScreenGui.Enabled
+    end
+end))
+
+-- ЛЕВАЯ ПАНЕЛЬ (ПРОФИЛЬ И ИГРОКИ)
+local ProfileCard = Instance.new("Frame")
+ProfileCard.Parent = ContainerHolder
+ProfileCard.BackgroundColor3 = Color3.fromRGB(26, 16, 40)
+ProfileCard.Position = UDim2.new(0, 15, 0, 15)
+ProfileCard.Size = UDim2.new(0, 170, 1, -30)
+
+local ProfileCorner = Instance.new("UICorner")
+ProfileCorner.CornerRadius = UDim.new(0, 8)
+ProfileCorner.Parent = ProfileCard
+
+local ProfileStroke = Instance.new("UIStroke")
+ProfileStroke.Color = Color3.fromRGB(120, 50, 160)
+ProfileStroke.Parent = ProfileCard
+
+local UserText = Instance.new("TextLabel")
+UserText.Parent = ProfileCard
+UserText.BackgroundTransparency = 1
+UserText.Position = UDim2.new(0, 5, 0, 6)
+UserText.Size = UDim2.new(1, -10, 0, 20)
+UserText.Font = Enum.Font.Cartoon
+UserText.Text = LocalPlayer.Name
+UserText.TextColor3 = Color3.fromRGB(240, 210, 255)
+UserText.TextSize = 14
+UserText.TextScaled = true
+
+local AvatarFrame = Instance.new("ImageLabel")
+AvatarFrame.Parent = ProfileCard
+AvatarFrame.BackgroundColor3 = Color3.fromRGB(45, 25, 70)
+AvatarFrame.Position = UDim2.new(0.5, -28, 0, 28)
+AvatarFrame.Size = UDim2.new(0, 56, 0, 56)
+AvatarFrame.Image = "rbxthumb://type=AvatarHeadShot&id=" .. LocalPlayer.UserId .. "&w=150&h=150"
+
+local AvatarCorner = Instance.new("UICorner")
+AvatarCorner.CornerRadius = UDim.new(1, 0)
+AvatarCorner.Parent = AvatarFrame
+
+local PlayersTitle = Instance.new("TextLabel")
+PlayersTitle.Parent = ProfileCard
+PlayersTitle.BackgroundTransparency = 1
+PlayersTitle.Position = UDim2.new(0, 8, 0, 96)
+PlayersTitle.Size = UDim2.new(1, -16, 0, 20)
+PlayersTitle.Font = Enum.Font.Cartoon
+PlayersTitle.Text = "Игроки"
+PlayersTitle.TextColor3 = Color3.fromRGB(255, 150, 220)
+PlayersTitle.TextSize = 13
+PlayersTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local PlayersScroll = Instance.new("ScrollingFrame")
+PlayersScroll.Parent = ProfileCard
+PlayersScroll.BackgroundTransparency = 1
+PlayersScroll.Position = UDim2.new(0, 8, 0, 118)
+PlayersScroll.Size = UDim2.new(1, -16, 1, -126)
+PlayersScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+PlayersScroll.ScrollBarThickness = 3
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Parent = PlayersScroll
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 5)
+
+local function updatePlayerList()
+    for _, child in ipairs(PlayersScroll:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    local allPlayers = Players:GetPlayers()
+    for _, plr in ipairs(allPlayers) do
+        local pFrame = Instance.new("Frame")
+        pFrame.Parent = PlayersScroll
+        pFrame.BackgroundColor3 = Color3.fromRGB(38, 22, 58)
+        pFrame.Size = UDim2.new(1, 0, 0, 38)
+        
+        local pCorner = Instance.new("UICorner")
+        pCorner.CornerRadius = UDim.new(0, 6)
+        pCorner.Parent = pFrame
+        
+        local avatar = Instance.new("ImageLabel")
+        avatar.Parent = pFrame
+        avatar.BackgroundColor3 = Color3.fromRGB(50, 30, 75)
+        avatar.Position = UDim2.new(0, 5, 0.5, -14)
+        avatar.Size = UDim2.new(0, 28, 0, 28)
+        avatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. plr.UserId .. "&w=150&h=150"
+        
+        local avCorner = Instance.new("UICorner")
+        avCorner.CornerRadius = UDim.new(1, 0)
+        avCorner.Parent = avatar
+        
+        local pName = Instance.new("TextLabel")
+        pName.Parent = pFrame
+        pName.BackgroundTransparency = 1
+        pName.Position = UDim2.new(0, 38, 0, 0)
+        pName.Size = UDim2.new(1, -43, 1, 0)
+        pName.Font = Enum.Font.Cartoon
+        pName.Text = plr.Name
+        pName.TextColor3 = Color3.fromRGB(240, 220, 255)
+        pName.TextSize = 13
+        pName.TextXAlignment = Enum.TextXAlignment.Left
+        pName.TextYAlignment = Enum.TextYAlignment.Center
+        pName.TextTruncate = Enum.TextTruncate.AtEnd
+    end
+    PlayersScroll.CanvasSize = UDim2.new(0, 0, 0, #allPlayers * 43)
+end
+
+trackConnection(Players.PlayerAdded:Connect(updatePlayerList))
+trackConnection(Players.PlayerRemoving:Connect(updatePlayerList))
+updatePlayerList()
+
+-- ПРАВАЯ ПАНЕЛЬ С ВКЛАДКАМИ
+local RightContainer = Instance.new("Frame")
+RightContainer.Parent = ContainerHolder
+RightContainer.BackgroundTransparency = 1
+RightContainer.Position = UDim2.new(0, 195, 0, 15)
+RightContainer.Size = UDim2.new(1, -210, 1, -30)
+
+local TabContainer = Instance.new("Frame")
+TabContainer.Parent = RightContainer
+TabContainer.BackgroundTransparency = 1
+TabContainer.Size = UDim2.new(1, 0, 0, 35)
+
+local function createTabButton(name, posX)
+    local btn = Instance.new("TextButton")
+    btn.Parent = TabContainer
+    btn.BackgroundColor3 = Color3.fromRGB(32, 20, 50)
+    btn.Position = UDim2.new(0, posX, 0, 0)
+    btn.Size = UDim2.new(0, 115, 1, 0)
+    btn.Font = Enum.Font.Cartoon
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(180, 150, 210)
+    btn.TextSize = 13
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+    return btn
+end
+
+local TabVisuals = createTabButton("Visuals", 0)
+TabVisuals.TextColor3 = Color3.fromRGB(255, 45, 180)
+local TabDribbling = createTabButton("Dribbling", 122)
+local TabSettings = createTabButton("Settings", 244)
+
+local ContentContainer = Instance.new("Frame")
+ContentContainer.Parent = RightContainer
+ContentContainer.BackgroundTransparency = 1
+ContentContainer.Position = UDim2.new(0, 0, 0, 45)
+ContentContainer.Size = UDim2.new(1, 0, 1, -45)
+
+local function createContentFrame()
+    local frame = Instance.new("ScrollingFrame")
+    frame.Parent = ContentContainer
+    frame.BackgroundTransparency = 1
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    frame.Visible = false
+    return frame
+end
+
+local VisualsFrame = createContentFrame()
+VisualsFrame.Visible = true
+VisualsFrame.CanvasSize = UDim2.new(0, 0, 0, 50)
+
+local DribblingFrame = createContentFrame()
+DribblingFrame.CanvasSize = UDim2.new(0, 0, 0, 140)
+
+local SettingsFrame = createContentFrame()
+SettingsFrame.CanvasSize = UDim2.new(0, 0, 0, 480)
+
+TabVisuals.MouseButton1Click:Connect(function()
+    VisualsFrame.Visible = true
+    DribblingFrame.Visible = false
+    SettingsFrame.Visible = false
+    TabVisuals.TextColor3 = Color3.fromRGB(255, 45, 180)
+    TabDribbling.TextColor3 = Color3.fromRGB(180, 150, 210)
+    TabSettings.TextColor3 = Color3.fromRGB(180, 150, 210)
+end)
+
+TabDribbling.MouseButton1Click:Connect(function()
+    VisualsFrame.Visible = false
+    DribblingFrame.Visible = true
+    SettingsFrame.Visible = false
+    TabDribbling.TextColor3 = Color3.fromRGB(255, 45, 180)
+    TabVisuals.TextColor3 = Color3.fromRGB(180, 150, 210)
+    TabSettings.TextColor3 = Color3.fromRGB(180, 150, 210)
+end)
+
+TabSettings.MouseButton1Click:Connect(function()
+    VisualsFrame.Visible = false
+    DribblingFrame.Visible = false
+    SettingsFrame.Visible = true
+    TabSettings.TextColor3 = Color3.fromRGB(255, 45, 180)
+    TabVisuals.TextColor3 = Color3.fromRGB(180, 150, 210)
+    TabDribbling.TextColor3 = Color3.fromRGB(180, 150, 210)
+end)
+
+local function createToggle(parent, text, posY, callback)
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Parent = parent
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(28, 16, 44)
+    toggleBtn.Position = UDim2.new(0, 0, 0, posY)
+    toggleBtn.Size = UDim2.new(1, 0, 0, 36)
+    toggleBtn.Font = Enum.Font.Cartoon
+    toggleBtn.Text = "    " .. text
+    toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    toggleBtn.TextSize = 13
+    toggleBtn.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = toggleBtn
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(75, 35, 105)
+    stroke.Parent = toggleBtn
+    
+    local indicator = Instance.new("Frame")
+    indicator.Parent = toggleBtn
+    indicator.BackgroundColor3 = Color3.fromRGB(60, 40, 85)
+    indicator.Position = UDim2.new(1, -40, 0.5, -9)
+    indicator.Size = UDim2.new(0, 30, 0, 18)
+    
+    local indCorner = Instance.new("UICorner")
+    indCorner.CornerRadius = UDim.new(1, 0)
+    indCorner.Parent = indicator
+    
+    local enabled = false
+    toggleBtn.MouseButton1Click:Connect(function()
+        enabled = not enabled
+        if enabled then
+            indicator.BackgroundColor3 = Color3.fromRGB(50, 255, 100)
+            stroke.Color = Color3.fromRGB(50, 255, 100)
+            toggleBtn.TextColor3 = Color3.fromRGB(50, 255, 100)
+        else
+            indicator.BackgroundColor3 = Color3.fromRGB(60, 40, 85)
+            stroke.Color = Color3.fromRGB(75, 35, 105)
+            toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        end
+        callback(enabled)
+    end)
+end
+
+-- ВКЛАДКА VISUALS
+createToggle(VisualsFrame, "Хитбоксы игроков (Size 5x5)", 0, function(state) hitboxesActive = state end)
+
+trackConnection(RunService.RenderStepped:Connect(function()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                if hitboxesActive then
+                    root.Size = Vector3.new(5, 5, 5)
+                    root.Transparency = 0.7
+                    root.CanCollide = false
+                else
+                    root.Size = Vector3.new(2, 2, 1)
+                    root.Transparency = 1
+                    root.CanCollide = true
+                end
+            end
+        end
+    end
+end))
+
+-- ВКЛАДКА DRIBBLING
+createToggle(DribblingFrame, "Фикс Взгляда", 0, function(state) lookActive = state end)
+
+trackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if lookActive and not isVHeld and (input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift) then
+        local camLook = Camera.CFrame.LookVector
+        lockedLookVector = Vector3.new(camLook.X, 0, camLook.Z).Unit
+    end
+    if input.KeyCode == Enum.KeyCode.V then isVHeld = true end
+end))
+
+trackConnection(UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.V then isVHeld = false end
+end))
+
+trackConnection(RunService.RenderStepped:Connect(function()
+    if not lookActive or isVHeld or not lockedLookVector then return end
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root then root.CFrame = CFrame.new(root.Position, root.Position + lockedLookVector) end
+end))
+
+-- Интегрированный Усилитель Слайда (Speed Slide по E)
+createToggle(DribblingFrame, "Усилитель Слайда (E)", 44, function(state) slideActive = state end)
+
+trackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed or not slideActive then return end
+    if input.KeyCode == Enum.KeyCode.E then
+        local char = LocalPlayer.Character
+        if char then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if root then
+                isBoosting = true
+                local lookVec = root.CFrame.LookVector
+                root.AssemblyLinearVelocity = Vector3.new(
+                    lookVec.X * 90,
+                    root.AssemblyLinearVelocity.Y,
+                    lookVec.Z * 90
+                )
+            end
+        end
+    end
+end))
+
+trackConnection(UserInputService.InputEnded:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.E then
+        isBoosting = false
+    end
+end))
+
+trackConnection(RunService.Heartbeat:Connect(function()
+    if not slideActive or not isBoosting then return end
+    local char = LocalPlayer.Character
+    if char then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root then
+            local lookVec = root.CFrame.LookVector
+            local currentV = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = Vector3.new(
+                lookVec.X * 80,
+                currentV.Y,
+                lookVec.Z * 80
+            )
+        end
+    end
+end))
+
+-- Магнит мяча 25x25
+local function findBall()
+    for _, obj in pairs(workspace:GetChildren()) do
+        if obj:IsA("BasePart") then
+            local name = obj.Name:lower()
+            if name:find("ball") or name:find("football") or name:find("soccer") or name:find("мяч") then
+                return obj
+            end
+        end
+    end
+    for _, folder in pairs(workspace:GetDescendants()) do
+        if folder:IsA("BasePart") then
+            local name = folder.Name:lower()
+            if name:find("ball") or name:find("football") or name:find("soccer") or name:find("мяч") then
+                return folder
+            end
+        end
+    end
+    return nil
+end
+
+local function applyBallMagnet(character)
+    local root = character:WaitForChild("HumanoidRootPart", 5)
+    if not root then return end
+
+    if ballMagnetActive then
+        root.Size = Vector3.new(25, 2, 25)
+        root.Transparency = 1 
+        root.CanCollide = false
+
+        if not root:FindFirstChild("HitboxVisualizer") then
+            local box = Instance.new("SelectionBox")
+            box.Name = "HitboxVisualizer"
+            box.Adornee = root
+            box.LineThickness = 0.02
+            box.Color3 = Color3.fromRGB(0, 255, 128)
+            box.Parent = root
+        end
+    else
+        root.Size = Vector3.new(2, 2, 1)
+        if root:FindFirstChild("HitboxVisualizer") then
+            root.HitboxVisualizer:Destroy()
+        end
+    end
+end
+
+createToggle(DribblingFrame, "Магнит мяча 25x25 (F)", 88, function(state)
+    ballMagnetActive = state
+    if LocalPlayer.Character then
+        applyBallMagnet(LocalPlayer.Character)
+    end
+end)
+
+trackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.F then
+        ballMagnetActive = not ballMagnetActive
+        if LocalPlayer.Character then
+            applyBallMagnet(LocalPlayer.Character)
+        end
+    end
+end))
+
+trackConnection(LocalPlayer.CharacterAdded:Connect(function(newChar)
+    task.spawn(function()
+        task.wait(1)
+        if ballMagnetActive and newChar then
+            applyBallMagnet(newChar)
+        end
+    end)
+end))
+
+trackConnection(RunService.RenderStepped:Connect(function()
+    if not ballMagnetActive then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    
+    if root.Size.X ~= 25 then
+        root.Size = Vector3.new(25, 2, 25)
+    end
+    
+    local ball = findBall()
+    if ball then
+        local relativePos = root.CFrame:PointToObjectSpace(ball.Position)
+        if math.abs(relativePos.X) <= 12.5 and math.abs(relativePos.Z) <= 12.5 and math.abs(relativePos.Y) <= 5 then
+            local targetPos = root.Position - Vector3.new(0, 1.5, 0) + (root.CFrame.LookVector * 2.2)
+            ball.CFrame = CFrame.new(targetPos)
+            ball.AssemblyLinearVelocity = Vector3.zero
+            ball.AssemblyAngularVelocity = Vector3.zero
+            
+            pcall(function()
+                firetouchinterest(root, ball, 0)
+                firetouchinterest(root, ball, 1)
+            end)
+        end
+    end
+end))
+
+-- ВКЛАДКА SETTINGS
+createToggle(SettingsFrame, "Анти-АФК", 0, function(state) antiAfkActive = state end)
+trackConnection(LocalPlayer.Idled:Connect(function()
+    if antiAfkActive then
+        VirtualUser:Button2Down(Vector2.new(0,0), Camera.CFrame)
+        task.wait(1)
+        VirtualUser:Button2Up(Vector2.new(0,0), Camera.CFrame)
+    end
+end))
+
+createToggle(SettingsFrame, "Широкий обзор (FOV 120)", 44, function(state)
+    Camera.FieldOfView = state and 120 or origFov
+end)
+
+createToggle(SettingsFrame, "Убрать туман и тени", 88, function(state)
+    Lighting.FogEnd = state and 999999 or origFog
+    Lighting.GlobalShadows = not state
+end)
+
+createToggle(SettingsFrame, "Оверлей: Счётчик FPS", 132, function(state)
+    local existing = PlayerGui:FindFirstChild("RishStatsOverlay")
+    if state and not existing then
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "RishStatsOverlay"
+        gui.Parent = PlayerGui
+        local lbl = Instance.new("TextLabel")
+        lbl.Parent = gui
+        lbl.Size = UDim2.new(0, 120, 0, 25)
+        lbl.Position = UDim2.new(0, 10, 0, 10)
+        lbl.BackgroundColor3 = Color3.fromRGB(20, 12, 35)
+        lbl.TextColor3 = Color3.fromRGB(50, 255, 100)
+        lbl.Font = Enum.Font.Cartoon
+        lbl.TextSize = 13
+        lbl.Active = true
+        Instance.new("UICorner", lbl).CornerRadius = UDim.new(0, 4)
+        makeElementDraggable(lbl)
+        
+        local lastUpdate = 0
+        trackConnection(RunService.RenderStepped:Connect(function(dt)
+            if tick() - lastUpdate > 0.5 then
+                lbl.Text = " FPS: " .. math.floor(1 / dt)
+                lastUpdate = tick()
+            end
+        end))
+    elseif not state and existing then
+        existing:Destroy()
+    end
+end)
+
+createToggle(SettingsFrame, "Оверлей: Скорость бега", 176, function(state)
+    local existing = PlayerGui:FindFirstChild("RishSpeedOverlay")
+    if state and not existing then
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "RishSpeedOverlay"
+        gui.Parent = PlayerGui
+        local lbl = Instance.new("TextLabel")
+        lbl.Parent = gui
+        lbl.Size = UDim2.new(0, 140, 0, 25)
+        lbl.Position = UDim2.new(0, 10, 0, 40)
+        lbl.BackgroundColor3 = Color3.fromRGB(20, 12, 35)
+        lbl.TextColor3 = Color3.fromRGB(255, 200, 50)
+        lbl.Font = Enum.Font.Cartoon
+        lbl.TextSize = 13
+        lbl.Active = true
+        Instance.new("UICorner", lbl).CornerRadius = UDim.new(0, 4)
+        makeElementDraggable(lbl)
+        
+        trackConnection(RunService.RenderStepped:Connect(function()
+            local char = LocalPlayer.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if root then
+                local speed = math.floor(Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z).Magnitude)
+                lbl.Text = " Скорость: " .. speed
+            end
+        end))
+    elseif not state and existing then
+        existing:Destroy()
+    end
+end)
+
+createToggle(SettingsFrame, "Кастомный прицел", 220, function(state)
+    local existing = PlayerGui:FindFirstChild("RishCrosshair")
+    if state and not existing then
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "RishCrosshair"
+        gui.Parent = PlayerGui
+        local center = Instance.new("Frame")
+        center.Parent = gui
+        center.AnchorPoint = Vector2.new(0.5, 0.5)
+        center.Position = UDim2.new(0.5, 0, 0.5, 0)
+        center.Size = UDim2.new(0, 6, 0, 6)
+        center.BackgroundColor3 = Color3.fromRGB(255, 45, 180)
+        center.Active = true
+        Instance.new("UICorner", center).CornerRadius = UDim.new(1, 0)
+        makeElementDraggable(center)
+    elseif not state and existing then
+        existing:Destroy()
+    end
+end)
+
+createToggle(SettingsFrame, "Ограничитель FPS (60 FPS)", 264, function(state)
+    if setfpscap then
+        setfpscap(state and 60 or 999)
+    end
+end)
+
+createToggle(SettingsFrame, "Оверлей: Регион и Пинг", 308, function(state)
+    local existing = PlayerGui:FindFirstChild("RishServerRegionOverlay")
+    if state and not existing then
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "RishServerRegionOverlay"
+        gui.Parent = PlayerGui
+        local lbl = Instance.new("TextLabel")
+        lbl.Parent = gui
+        lbl.Size = UDim2.new(0, 210, 0, 25)
+        lbl.Position = UDim2.new(0, 10, 0, 70)
+        lbl.BackgroundColor3 = Color3.fromRGB(20, 12, 35)
+        lbl.TextColor3 = Color3.fromRGB(100, 200, 255)
+        lbl.Font = Enum.Font.Cartoon
+        lbl.TextSize = 12
+        lbl.Active = true
+        Instance.new("UICorner", lbl).CornerRadius = UDim.new(0, 4)
+        makeElementDraggable(lbl)
+        
+        trackConnection(RunService.RenderStepped:Connect(function()
+            local success, pingVal = pcall(function()
+                return math.floor(LocalPlayer:GetNetworkPing() * 1000)
+            end)
+            local pingText = success and (pingVal .. " ms") or "N/A"
+            lbl.Text = " Пинг: " .. pingText .. " | Регион: Roblox Cloud"
+        end))
+    elseif not state and existing then
+        existing:Destroy()
+    end
+end)
+
+createToggle(SettingsFrame, "Матовая графика (Комфортная)", 352, function(state)
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") then
+            if state then
+                if not originalMaterials[obj] then
+                    originalMaterials[obj] = obj.Material
+                    originalShadowsState[obj] = obj.CastShadow
+                end
+                obj.Material = Enum.Material.SmoothPlastic
+                obj.CastShadow = false
+            else
+                if originalMaterials[obj] then
+                    obj.Material = originalMaterials[obj]
+                    obj.CastShadow = originalShadowsState[obj]
+                end
+            end
+        elseif obj:IsA("Texture") or obj:IsA("Decal") then
+            obj.Transparency = state and 1 or 0
+        end
+    end
+
+    local cc = Lighting:FindFirstChild("RishColorCorrection")
+    if state then
+        if not cc then
+            cc = Instance.new("ColorCorrectionEffect")
+            cc.Name = "RishColorCorrection"
+            cc.Parent = Lighting
+        end
+        cc.Saturation = -0.75
+        cc.Brightness = -0.15
+        cc.Contrast = 0.10
+    else
+        if cc then cc:Destroy() end
+    end
+end)
+
+local RejoinBtn = Instance.new("TextButton")
+RejoinBtn.Parent = SettingsFrame
+RejoinBtn.BackgroundColor3 = Color3.fromRGB(55, 20, 45)
+RejoinBtn.Position = UDim2.new(0, 0, 0, 396)
+RejoinBtn.Size = UDim2.new(1, 0, 0, 36)
+RejoinBtn.Font = Enum.Font.Cartoon
+RejoinBtn.Text = "🔄 Быстрый Реджойн (Rejoin)"
+RejoinBtn.TextColor3 = Color3.fromRGB(255, 100, 150)
+RejoinBtn.TextSize = 13
+
+local RejoinCorner = Instance.new("UICorner")
+RejoinCorner.CornerRadius = UDim.new(0, 6)
+RejoinCorner.Parent = RejoinBtn
+
+RejoinBtn.MouseButton1Click:Connect(function()
+    pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+end)
